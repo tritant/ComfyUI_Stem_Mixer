@@ -366,9 +366,21 @@ class StemMixerUI {
         // ResizeObserver — fires on any size change of the DOM widget
         this._ro = new ResizeObserver(() => this._onContainerResize());
 
+        // Restore flag: prevents the deferred default restore from running
+        // if loadedGraphNode arrives first.
+        this._restored = false;
+
         this.container = this._buildShell();
         this._injectCSS();
-        this._restoreState();
+
+        // Try restoring after a short delay. If loadedGraphNode (which fires
+        // when a saved workflow is loaded) runs first, it will set _restored
+        // and we skip the default fallback.
+        this._restoreTimer = setTimeout(() => {
+            if (this._restored) return;
+            this._restoreState();
+            this._restored = true;
+        }, 100);
     }
 
     // -----------------------------------------------------------------------
@@ -1779,6 +1791,14 @@ class StemMixerUI {
     }
 
     async _restoreState() {
+        // Wipe any previously-built tracks (handles double-restore safety)
+        for (const t of [...this.tracks]) {
+            this._disposeTrackAudio(t);
+            const row = this._tracksEl().querySelector(`[data-id="${t.id}"]`);
+            if (row) row.remove();
+        }
+        this.tracks = [];
+
         let parsed = null;
         try { parsed = JSON.parse(this.stateWidget.value || "{}"); } catch { parsed = null; }
 
@@ -1810,7 +1830,6 @@ class StemMixerUI {
             }
         }
         for (const t of trackList) await this._addTrack(t);
-        // Redraw selection overlay after tracks are loaded
         if (this.selection) this._redrawAllWaveforms();
     }
 
@@ -1846,23 +1865,40 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = async function () {
             onNodeCreated?.apply(this, arguments);
 
-            // Hide state widget completely
+            // Find the hidden state widget — it MUST keep its default
+            // serialize behaviour so ComfyUI saves/loads it with the workflow.
             const stateWidget = this.widgets?.find(w => w.name === "state");
+
             if (stateWidget) {
-                if (stateWidget.element) {
-                    stateWidget.element.style.cssText =
-                        "display:none!important;height:0!important;overflow:hidden!important;";
-                }
+                // Shrink the widget's logical footprint so it takes no space
                 stateWidget.computeSize = () => [0, -4];
-                stateWidget.draw        = () => {};
+
+                // Force-hide the underlying DOM element on every redraw.
+                // ComfyUI sometimes recreates the textarea when the node
+                // scrolls in/out of view, so a one-time hide is not enough.
+                const origDraw = this.onDrawForeground;
+                this.onDrawForeground = function (ctx) {
+                    if (origDraw) origDraw.apply(this, arguments);
+                    const el = stateWidget.inputEl;
+                    if (el) {
+                        if (el.style.display !== "none") el.style.display = "none";
+                        const parent = el.parentElement;
+                        if (parent && parent.style.display !== "none") {
+                            parent.style.display = "none";
+                        }
+                    }
+                };
             }
 
-            const ui = new StemMixerUI(this, stateWidget ?? { value: "[]" });
+            // Build the UI. The constructor schedules a delayed default
+            // restore (100ms). loadedGraphNode below will pre-empt it if
+            // a saved workflow is being loaded.
+            const ui = new StemMixerUI(this, stateWidget ?? { value: "{}" });
+            this._stemMixerUI = ui;
 
             this.addDOMWidget("stem_mixer_ui", "div", ui.container, {
-                getValue:    () => stateWidget?.value ?? "[]",
+                getValue:    () => stateWidget?.value ?? "{}",
                 setValue:    () => {},
-                // Always fill the full node area
                 computeSize: (w) => [w, this.size[1] - 40],
             });
 
@@ -1871,17 +1907,21 @@ app.registerExtension({
         };
     },
 
-    async nodeCreated(node) {
+    // Called once ComfyUI has finished deserializing a node from a saved
+    // workflow. The state widget value is now populated.
+    async loadedGraphNode(node) {
         if (node.comfyClass !== "AudioStemMixer") return;
-        await new Promise(r => setTimeout(r, 50));
-        const w = node.widgets?.find(w => w.name === "state");
-        if (w) {
-            w.computeSize = () => [0, -4];
-            w.draw        = () => {};
-            if (w.element) {
-                w.element.style.cssText =
-                    "display:none!important;height:0!important;overflow:hidden!important;";
-            }
+        const ui = node._stemMixerUI;
+        if (!ui) return;
+
+        // Cancel the default-config fallback timer — we have real data
+        if (ui._restoreTimer) {
+            clearTimeout(ui._restoreTimer);
+            ui._restoreTimer = null;
         }
+        if (ui._restored) return;
+        ui._restored = true;
+
+        await ui._restoreState();
     },
 });
