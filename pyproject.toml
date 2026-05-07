@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-Stem-Mixer"
 description = "Multitrack stem mixer node. Load stems directly into the node, mix with faders/mute/solo, preview in real time, and produce a final mix on workflow execution."
-version = "1.5.2"
+version = "1.5.3"
 license = { text = "MIT" }
 
 [project.urls]
