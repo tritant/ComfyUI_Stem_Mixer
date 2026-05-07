@@ -3,6 +3,7 @@
 A professional multitrack stem mixer node for ComfyUI. Load audio stems directly into the node, mix them in real time with a full set of DAW-style controls, and produce a single mixed `AUDIO` output when the workflow runs.
 
 ---
+<img width="1917" height="1086" alt="Capture d&#39;écran 2026-05-07 103845" src="https://github.com/user-attachments/assets/0e03188d-029d-4458-a83b-896f32e97620" />
 
 ## Features
 
