@@ -3,7 +3,8 @@
 A professional multitrack stem mixer node for ComfyUI. Load audio stems directly into the node, mix them in real time with a full set of DAW-style controls, and produce a single mixed `AUDIO` output when the workflow runs.
 
 ---
-<img width="1917" height="1086" alt="Capture d&#39;écran 2026-05-07 103845" src="https://github.com/user-attachments/assets/0e03188d-029d-4458-a83b-896f32e97620" />
+<img width="1780" height="967" alt="Capture d&#39;écran 2026-05-09 133035" src="https://github.com/user-attachments/assets/9850cfdd-c3a5-4836-bda6-bc2ed851c652" />
+
 
 ## Features
 
@@ -39,6 +40,7 @@ A professional multitrack stem mixer node for ComfyUI. Load audio stems directly
 - **S (Solo)** — exclusive solo: only one track can be soloed at a time.
 - **EQ button** — opens the per-track EQ popup (see below).
 - **✕ Remove** — removes the track and frees all resources.
+- **8 FX (reverb, stereo widener and more)** — add multi effects per track.
 
 ### Per-track EQ (popup)
 - **Floating, draggable popup** — one per track, positioned freely on screen. Multiple popups can be open simultaneously. Position is saved per track in the workflow JSON.
