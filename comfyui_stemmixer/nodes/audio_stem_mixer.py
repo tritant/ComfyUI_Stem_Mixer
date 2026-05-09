@@ -28,6 +28,8 @@ import torchaudio
 
 import folder_paths
 
+from .effects import apply_fx_chain
+
 
 DEFAULT_STATE = "[]"
 
@@ -36,37 +38,48 @@ DEFAULT_STATE = "[]"
 # Biquad filter coefficients (RBJ Audio EQ Cookbook)
 # ---------------------------------------------------------------------------
 def _biquad_lowshelf(fs: float, f0: float, gain_db: float):
-    """Low-shelf filter coefficients matching Web Audio's BiquadFilterNode."""
+    """Low-shelf filter — exact Web Audio API formula (Chrome/Firefox).
+    Uses the sinh-based alpha that produces a narrower, more focused shelf
+    than the RBJ default. Q is not used."""
     A = 10 ** (gain_db / 40.0)
     w0 = 2 * math.pi * f0 / fs
-    cos_w0, sin_w0 = math.cos(w0), math.sin(w0)
-    S = 1.0
-    alpha = sin_w0 / 2 * math.sqrt((A + 1/A) * (1/S - 1) + 2)
-    sqrtA = math.sqrt(A)
+    sin_w0 = math.sin(w0)
+    cos_w0 = math.cos(w0)
+    # Web Audio's alpha formula for shelves (S=1)
+    # alpha = sin(w0) * sinh(ln(2)/2 * w0/sin(w0))
+    if sin_w0 == 0:
+        alpha = 0.0
+    else:
+        alpha = sin_w0 * math.sinh(math.log(2) / 2.0 * w0 / sin_w0)
+    sqrtA_2alpha = 2.0 * math.sqrt(A) * alpha
 
-    b0 =    A*((A+1) - (A-1)*cos_w0 + 2*sqrtA*alpha)
-    b1 =  2*A*((A-1) - (A+1)*cos_w0)
-    b2 =    A*((A+1) - (A-1)*cos_w0 - 2*sqrtA*alpha)
-    a0 =       (A+1) + (A-1)*cos_w0 + 2*sqrtA*alpha
-    a1 =   -2*((A-1) + (A+1)*cos_w0)
-    a2 =       (A+1) + (A-1)*cos_w0 - 2*sqrtA*alpha
+    b0 =     A * ((A + 1) - (A - 1) * cos_w0 + sqrtA_2alpha)
+    b1 = 2 * A * ((A - 1) - (A + 1) * cos_w0)
+    b2 =     A * ((A + 1) - (A - 1) * cos_w0 - sqrtA_2alpha)
+    a0 =         (A + 1) + (A - 1) * cos_w0 + sqrtA_2alpha
+    a1 =    -2 * ((A - 1) + (A + 1) * cos_w0)
+    a2 =         (A + 1) + (A - 1) * cos_w0 - sqrtA_2alpha
     return [b0/a0, b1/a0, b2/a0], [1.0, a1/a0, a2/a0]
 
-
 def _biquad_highshelf(fs: float, f0: float, gain_db: float):
+    """High-shelf filter — exact Web Audio API formula (Chrome/Firefox).
+    Q is not used."""
     A = 10 ** (gain_db / 40.0)
     w0 = 2 * math.pi * f0 / fs
-    cos_w0, sin_w0 = math.cos(w0), math.sin(w0)
-    S = 1.0
-    alpha = sin_w0 / 2 * math.sqrt((A + 1/A) * (1/S - 1) + 2)
-    sqrtA = math.sqrt(A)
+    sin_w0 = math.sin(w0)
+    cos_w0 = math.cos(w0)
+    if sin_w0 == 0:
+        alpha = 0.0
+    else:
+        alpha = sin_w0 * math.sinh(math.log(2) / 2.0 * w0 / sin_w0)
+    sqrtA_2alpha = 2.0 * math.sqrt(A) * alpha
 
-    b0 =    A*((A+1) + (A-1)*cos_w0 + 2*sqrtA*alpha)
-    b1 = -2*A*((A-1) + (A+1)*cos_w0)
-    b2 =    A*((A+1) + (A-1)*cos_w0 - 2*sqrtA*alpha)
-    a0 =       (A+1) - (A-1)*cos_w0 + 2*sqrtA*alpha
-    a1 =    2*((A-1) - (A+1)*cos_w0)
-    a2 =       (A+1) - (A-1)*cos_w0 - 2*sqrtA*alpha
+    b0 =     A * ((A + 1) + (A - 1) * cos_w0 + sqrtA_2alpha)
+    b1 =-2 * A * ((A - 1) + (A + 1) * cos_w0)
+    b2 =     A * ((A + 1) + (A - 1) * cos_w0 - sqrtA_2alpha)
+    a0 =         (A + 1) - (A - 1) * cos_w0 + sqrtA_2alpha
+    a1 =     2 * ((A - 1) - (A + 1) * cos_w0)
+    a2 =         (A + 1) - (A - 1) * cos_w0 - sqrtA_2alpha
     return [b0/a0, b1/a0, b2/a0], [1.0, a1/a0, a2/a0]
 
 
@@ -86,32 +99,37 @@ def _biquad_peaking(fs: float, f0: float, gain_db: float, q: float = 0.7):
 
 
 def _apply_biquad(waveform: torch.Tensor, b: list, a: list) -> torch.Tensor:
-    """Apply a biquad filter (Direct Form I) to each channel."""
-    return torchaudio.functional.biquad(
-        waveform, b[0], b[1], b[2], a[0], a[1], a[2]
+    """Apply a biquad filter using torchaudio's lfilter, which doesn't clip
+    internally (unlike the default biquad function in some torchaudio versions)."""
+    a_coeffs = torch.tensor(a, dtype=waveform.dtype)
+    b_coeffs = torch.tensor(b, dtype=waveform.dtype)
+    return torchaudio.functional.lfilter(
+        waveform, a_coeffs, b_coeffs, clamp=False
     )
 
 
 def _apply_eq(waveform: torch.Tensor, sr: int, eq: dict) -> torch.Tensor:
-    """Apply 3-band EQ (low shelf 100Hz, peak 1kHz Q=0.7, high shelf 8kHz)
-    to a stereo waveform [2, N]. eq is the per-track JSON section."""
     if not eq:
         return waveform
+
+    # Calibration factor: Python biquads sound stronger than Web Audio's at the
+    # same gain value. We scale down the requested gain to match the preview.
+    EQ_GAIN_SCALE = 0.7
 
     # Low shelf
     low = eq.get("low", {})
     if low.get("on", True) and abs(low.get("gain", 0)) > 0.01:
-        b, a = _biquad_lowshelf(sr, 100.0, float(low["gain"]))
+        b, a = _biquad_lowshelf(sr, 100.0, float(low["gain"]) * EQ_GAIN_SCALE)
         waveform = _apply_biquad(waveform, b, a)
     # Peak (mid)
     mid = eq.get("mid", {})
     if mid.get("on", True) and abs(mid.get("gain", 0)) > 0.01:
-        b, a = _biquad_peaking(sr, 1000.0, float(mid["gain"]), 0.7)
+        b, a = _biquad_peaking(sr, 1000.0, float(mid["gain"]) * EQ_GAIN_SCALE, 0.7)
         waveform = _apply_biquad(waveform, b, a)
     # High shelf
     high = eq.get("high", {})
     if high.get("on", True) and abs(high.get("gain", 0)) > 0.01:
-        b, a = _biquad_highshelf(sr, 8000.0, float(high["gain"]))
+        b, a = _biquad_highshelf(sr, 8000.0, float(high["gain"]) * EQ_GAIN_SCALE)
         waveform = _apply_biquad(waveform, b, a)
     return waveform
 
@@ -253,6 +271,16 @@ class AudioStemMixer:
             eq = t.get("eq")
             if eq:
                 wf = _apply_eq(wf, sr, eq)
+                
+                #peak_after_eq = float(wf.abs().max().item())
+                #rms_after_eq = float(torch.sqrt((wf ** 2).mean()).item())
+                #rms_db = 20 * math.log10(max(rms_after_eq, 1e-9))
+                #print(f"[DEBUG after EQ] peak={peak_after_eq:.4f}, RMS={rms_after_eq:.4f} ({rms_db:.1f} dB)")
+            
+            # Apply per-track FX chain (reverb / delay / chorus / distortion)
+            fx_list = t.get("fx")
+            if fx_list:
+                wf = apply_fx_chain(wf, sr, fx_list)
 
             gain = float(t.get("gain", 1.0))
             pan  = float(t.get("pan", 0.0))
@@ -284,11 +312,20 @@ class AudioStemMixer:
         # Master volume (applied after summing tracks, before clip protection)
         if master_volume != 1.0:
             mix_buf = mix_buf * master_volume
-
-        # Soft-clip protection
-        peak = mix_buf.abs().max().item()
-        if peak > 1.0:
-            mix_buf = mix_buf / peak
+        peak_before_limit = float(mix_buf.abs().max().item())
+        rms = float(torch.sqrt((mix_buf ** 2).mean()).item())
+        rms_db = 20 * math.log10(max(rms, 1e-9))
+        #print(f"[DEBUG Python mix] peak={peak_before_limit:.4f}, RMS={rms:.4f} ({rms_db:.1f} dB)")
+        # Soft-limiter (matches Web Audio's output behavior).
+        # Smoothly compresses peaks above 0.95 instead of hard-clipping at 1.0.
+        threshold = 0.95
+        abs_mix = mix_buf.abs()
+        over_mask = abs_mix > threshold
+        if over_mask.any():
+            sign = torch.sign(mix_buf)
+            over_amount = (abs_mix - threshold) / (1.0 - threshold)
+            soft = threshold + (1.0 - threshold) * torch.tanh(over_amount)
+            mix_buf = torch.where(over_mask, sign * soft, mix_buf)
 
         return ({
             "waveform": mix_buf.unsqueeze(0),
