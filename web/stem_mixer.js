@@ -1,10 +1,11 @@
 // ComfyUI-StemMixer — frontend extension
-// V1.5: loop + selection (drag to select, drag edges to resize, drag inside
-//       to move, double-click to clear). Native sample-accurate looping
-//       via AudioBufferSourceNode.loop. Per-track 3-band EQ (popup).
-//       Master volume + master VU, total duration, drag & drop loading.
+// V1.7: per-track FX chain (Reverb / Delay / Chorus / Distortion) with
+//       floating draggable popups, identical Python rendering.
+//       Dual compatibility (Nodes 1.0 + Nodes 2.0).
+//       Loop + selection, per-track EQ, master volume + master VU.
 
 import { app } from "../../scripts/app.js";
+import { FX_REGISTRY, StemFXChain, showFXMenu, openFXPopup, injectFXCSS } from "./stem_effects.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -35,8 +36,9 @@ const STYLES = `
     color: #ccc;
     box-sizing: border-box;
     width: 100%;
-    overflow-x: hidden;
-    overflow-y: auto;
+    overflow: hidden;          /* scroll happens in .sm-tracks now */
+    display: flex;
+    flex-direction: column;
     transition: outline 0.1s ease;
 }
 .stemmixer-root.sm-drag-active {
@@ -49,6 +51,32 @@ const STYLES = `
     align-items: center;
     gap: 8px;
     margin-bottom: 8px;
+    flex-shrink: 0;            /* never compress the transport */
+}
+.sm-tracks {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    /* Reserve the scrollbar's gutter so track buttons stay clear */
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: #555 transparent;
+    /* Generous right padding so the buttons (M / S / ✕ etc) breathe
+       comfortably away from the scrollbar */
+    padding-right: 12px;
+}
+.sm-tracks::-webkit-scrollbar {
+    width: 8px;
+}
+.sm-tracks::-webkit-scrollbar-track {
+    background: transparent;
+}
+.sm-tracks::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 4px;
+}
+.sm-tracks::-webkit-scrollbar-thumb:hover {
+    background: #777;
 }
 .sm-transport { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .sm-time {
@@ -544,7 +572,7 @@ class StemMixerUI {
     // -----------------------------------------------------------------------
     // Track management
     // -----------------------------------------------------------------------
-    async _addTrack(data = null) {
+    async _addTrack(data = null, isRestore = false) {
 
         const track = {
             id:       data?.id       ?? genId(),
@@ -561,6 +589,9 @@ class StemMixerUI {
                 high: { gain: data?.eq?.high?.gain ?? 0, on: data?.eq?.high?.on ?? true },
             },
             eqWindow: data?.eqWindow ?? null,    // {x, y} or null if never opened
+            // FX chain serialized state — actual instance is built in _loadTrack
+            fx:       Array.isArray(data?.fx) ? data.fx : [],
+            fxChain:  null,
             // Audio data
             buffer:       null,    // AudioBuffer, decoded once
             duration:     0,
@@ -590,7 +621,7 @@ class StemMixerUI {
         const row = this._buildRow(track);
         this._tracksEl().appendChild(row);
         this.tracks.push(track);
-        this._autoResizeNode();
+        this._autoResizeNode(isRestore);
 
         if (track.filename) await this._loadTrack(track, row);
     }
@@ -604,6 +635,7 @@ class StemMixerUI {
                 <input class="sm-track-name" type="text" value="${esc(track.name)}" />
                 <button class="sm-btn sm-load-btn">📂 Load</button>
                 <button class="sm-btn sm-eq-btn" title="EQ">EQ</button>
+                <button class="sm-btn sm-fx-btn" title="Effects">FX</button>
                 <button class="sm-btn sm-mute-btn ${track.mute ? 'active' : ''}">M</button>
                 <button class="sm-btn sm-solo-btn ${track.solo ? 'active' : ''}">S</button>
                 <button class="sm-btn sm-remove-btn">✕</button>
@@ -640,6 +672,16 @@ class StemMixerUI {
         const eqBtn = row.querySelector(".sm-eq-btn");
         eqBtn.addEventListener("click", () => this._toggleEQPopup(track, row));
         this._refreshEQButton(track, eqBtn);
+
+        const fxBtn = row.querySelector(".sm-fx-btn");
+        fxBtn.addEventListener("click", () => {
+            if (!track.fxChain) {
+                alert("Load a file first to enable effects.");
+                return;
+            }
+            showFXMenu(track, fxBtn, this);
+        });
+        this._refreshFXButton(track, fxBtn);
         row.querySelector(".sm-mute-btn").addEventListener("click", e => {
             track.mute = !track.mute;
             e.target.classList.toggle("active", track.mute);
@@ -996,6 +1038,12 @@ class StemMixerUI {
             track.eqPopup.remove();
             track.eqPopup = null;
         }
+        // Sync serialized FX state and dispose the chain (closes popups too)
+        if (track.fxChain) {
+            track.fx = track.fxChain.serialize();
+            track.fxChain.dispose();
+            track.fxChain = null;
+        }
         // Disconnect persistent graph nodes
         for (const k of ["pannerNode", "eqLowNode", "eqMidNode", "eqHighNode",
                          "gainNode", "splitter", "analyserL", "analyserR"]) {
@@ -1069,7 +1117,19 @@ class StemMixerUI {
         track.pannerNode.connect(track.eqLowNode);
         track.eqLowNode.connect(track.eqMidNode);
         track.eqMidNode.connect(track.eqHighNode);
-        track.eqHighNode.connect(track.gainNode);
+
+        // Build the FX chain (or rebuild from saved state) and insert it
+        // between EQ and gain: eqHigh → fxIn → [fx...] → fxOut → gain
+        if (track.fxChain) track.fxChain.dispose();
+        track.fxChain = new StemFXChain(this.ctx, this, track);
+        for (const fxData of track.fx) {
+            if (FX_REGISTRY[fxData.type]) {
+                track.fxChain.addEffect(fxData.type, fxData);
+            }
+        }
+        track.eqHighNode.connect(track.fxChain.fxIn);
+        track.fxChain.fxOut.connect(track.gainNode);
+
         track.gainNode.connect(track.splitter);
         track.splitter.connect(track.analyserL, 0);
         track.splitter.connect(track.analyserR, 1);
@@ -1078,6 +1138,7 @@ class StemMixerUI {
         this._applyGain(track);
         this._applyPan(track);
         this._applyEQ(track);
+        this._refreshFXButton(track);
 
         // 4. Build the waveform peaks array directly from the AudioBuffer
         //    (no need for a separate decode pass like before)
@@ -1496,6 +1557,16 @@ class StemMixerUI {
         btn.classList.toggle("eq-engaged", !open && active);
     }
 
+    _refreshFXButton(track, btn = null) {
+        if (!btn) {
+            const row = this._tracksEl().querySelector(`[data-id="${track.id}"]`);
+            btn = row?.querySelector(".sm-fx-btn");
+        }
+        if (!btn) return;
+        const active = !!(track.fxChain && track.fxChain.isActive());
+        btn.classList.toggle("fx-engaged", active);
+    }
+
     // -----------------------------------------------------------------------
     // EQ popup — floating, draggable, one per track
     // -----------------------------------------------------------------------
@@ -1781,6 +1852,9 @@ class StemMixerUI {
                     high: { gain: t.eq.high.gain, on: t.eq.high.on },
                 },
                 eqWindow: t.eqWindow ?? null,
+                // FX: pull from the live chain if it exists, otherwise the
+                // last-known serialized state stored on the track.
+                fx: t.fxChain ? t.fxChain.serialize() : (t.fx || []),
             })),
             masterVolume: this.masterVolume,
             loopOn:       this.loopOn,
@@ -1829,25 +1903,61 @@ class StemMixerUI {
                 };
             }
         }
-        for (const t of trackList) await this._addTrack(t);
+        for (const t of trackList) await this._addTrack(t, true);
         if (this.selection) this._redrawAllWaveforms();
     }
 
     // -----------------------------------------------------------------------
     // Auto-resize node — fits content, waveform height adapts to result
     // -----------------------------------------------------------------------
-    _autoResizeNode() {
-        const wfH = this._calcWfHeight();
-        const trackH = TRACK_FIXED_H + wfH;
-        const h = HEADER_H + this.tracks.length * trackH + PADDING_H;
-        this.node.size = [this.node.size[0], Math.max(h, 80)];
+    // Resize the node to fit its content.
+    //
+    // We measure the actual rendered height of one track DOM element
+    // rather than relying on hard-coded constants, so any CSS tweak
+    // (padding, gap, scrollbar) is automatically taken into account.
+    //
+    // preserveCurrentHeight=true → never shrink below current size (used
+    //   during workflow restore to keep the user's manual height).
+    _autoResizeNode(preserveCurrentHeight = false) {
+        const fallbackH = TRACK_FIXED_H + this._calcWfHeight();
+        let trackH = fallbackH;
+
+        // Try to use the real measured height of an existing track row.
+        // Falls back to the constant if layout isn't ready yet (height = 0).
+        const sample = this._tracksEl().querySelector(".sm-track");
+        if (sample) {
+            const rect = sample.getBoundingClientRect();
+            if (rect.height > 0) {
+                const cs = getComputedStyle(sample);
+                const marginBottom = parseFloat(cs.marginBottom) || 0;
+                trackH = rect.height + marginBottom;
+            }
+        }
+
+        // Header is fixed; pad a small safety margin (6px) so subpixel
+        // rounding and the scrollbar gutter never cause an unwanted scroll.
+        const minH = HEADER_H + this.tracks.length * trackH + PADDING_H + 6;
+
+        const currentH = this.node.size?.[1] || 0;
+        const finalH = preserveCurrentHeight
+            ? Math.max(minH, currentH, 80)
+            : Math.max(minH, 80);
+        this.node.size = [this.node.size[0], finalH];
         this.node.setDirtyCanvas(true, true);
-        // Apply height immediately after resize
-        this._lastWfH = null;   // force reapply
+        this._lastWfH = null;
         this._applyWfHeight();
-        // Refresh total time display (max duration may have changed)
         if (!this.isPlaying) {
             this._timeEl().textContent = this._formatTimeWithTotal(this.offsetSec);
+        }
+
+        // Opportunistic Vue reconciliation: if we're in Nodes 2.0 and the
+        // DOM fixes haven't been applied yet (e.g. for a freshly-created
+        // node where the initial reconciliation race lost), apply them now.
+        // This is cheap when fixes are already in place (no-op).
+        const entry = _stemMixerRegistry.get(this.node.id);
+        if (entry && entry.mode !== "vue" && _isNodes2()) {
+            entry.mode = null;   // force re-evaluation
+            _reconcileNode(this.node.id);
         }
     }
 }
@@ -1855,11 +1965,39 @@ class StemMixerUI {
 // ---------------------------------------------------------------------------
 // ComfyUI extension
 // ---------------------------------------------------------------------------
+
+// Pre-emptive CSS rule — applies INSTANTLY to any Vue-rendered widget that
+// matches, the moment Vue mounts it. No JavaScript timing, no MutationObserver
+// race. The structure observed in Nodes 2.0 is:
+//
+//   div.lg-node-widget
+//     └─ div.group[node-type="AudioStemMixer"]
+//          └─ textarea
+//
+// We target the .lg-node-widget that contains a node-type="AudioStemMixer"
+// wrapper holding a textarea. This pinpoints the state widget exclusively.
+(function injectPreemptiveHideRule() {
+    if (document.getElementById("stem-mixer-preempt-css")) return;
+    const style = document.createElement("style");
+    style.id = "stem-mixer-preempt-css";
+    style.textContent = `
+        /* Hide the JSON state widget row inside StemMixer nodes the instant
+           Vue mounts it, before any JavaScript runs. */
+        .lg-node-widget:has(> [node-type="AudioStemMixer"] > textarea) {
+            display: none !important;
+        }
+    `;
+    document.head.appendChild(style);
+})();
+
 app.registerExtension({
     name: "comfy.stem_mixer",
 
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData?.name !== "AudioStemMixer") return;
+
+        // Inject FX-specific CSS once (idempotent)
+        injectFXCSS();
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = async function () {
@@ -1871,11 +2009,13 @@ app.registerExtension({
 
             if (stateWidget) {
                 // Shrink the widget's logical footprint so it takes no space
+                // in LiteGraph 1.0. (No-op in Nodes 2.0 since Vue ignores it.)
                 stateWidget.computeSize = () => [0, -4];
 
-                // Force-hide the underlying DOM element on every redraw.
-                // ComfyUI sometimes recreates the textarea when the node
+                // LiteGraph 1.0: force-hide the underlying DOM textarea on
+                // every redraw. ComfyUI sometimes recreates it when the node
                 // scrolls in/out of view, so a one-time hide is not enough.
+                // (No-op in Nodes 2.0 since Vue handles its own DOM.)
                 const origDraw = this.onDrawForeground;
                 this.onDrawForeground = function (ctx) {
                     if (origDraw) origDraw.apply(this, arguments);
@@ -1896,25 +2036,39 @@ app.registerExtension({
             const ui = new StemMixerUI(this, stateWidget ?? { value: "{}" });
             this._stemMixerUI = ui;
 
+            // computeSize for the DOM widget:
+            // - LiteGraph 1.0 uses (size[1] - 40) so the widget always fills
+            //   the whole node area below the header.
+            // - Nodes 2.0 (Vue) needs a SMALL value so the grid row containing
+            //   our widget can shrink, allowing the user to resize the node
+            //   below the natural content height (and trigger our internal
+            //   scrollbar). The detection is done at call time.
+            const node = this;
             this.addDOMWidget("stem_mixer_ui", "div", ui.container, {
                 getValue:    () => stateWidget?.value ?? "{}",
                 setValue:    () => {},
-                computeSize: (w) => [w, this.size[1] - 40],
+                computeSize: (w) => {
+                    return _isNodes2()
+                        ? [w, 80]
+                        : [w, Math.max(80, (node.size?.[1] || 80) - 40)];
+                },
             });
 
             this.size = [520, 80];
             this.setDirtyCanvas(true, true);
+
+            // Register the UI with the global mode watcher. This installs
+            // a one-shot MutationObserver (on first call) that keeps every
+            // StemMixer in sync with the current Nodes 1.0 / 2.0 mode.
+            _registerStemMixer(this, ui);
         };
     },
 
-    // Called once ComfyUI has finished deserializing a node from a saved
-    // workflow. The state widget value is now populated.
     async loadedGraphNode(node) {
         if (node.comfyClass !== "AudioStemMixer") return;
         const ui = node._stemMixerUI;
         if (!ui) return;
 
-        // Cancel the default-config fallback timer — we have real data
         if (ui._restoreTimer) {
             clearTimeout(ui._restoreTimer);
             ui._restoreTimer = null;
@@ -1922,6 +2076,210 @@ app.registerExtension({
         if (ui._restored) return;
         ui._restored = true;
 
+        // Trigger a reconciliation pass BEFORE starting the async restore,
+        // so the state textarea is hidden as early as possible (otherwise
+        // it would stay visible the entire time files are being decoded).
+        const entry = _stemMixerRegistry.get(node.id);
+        if (entry) entry.mode = null;
+        _reconcileNode(node.id);
+
         await ui._restoreState();
+
+        // Re-reconcile after the restore: Vue may have remounted parts of
+        // its DOM during the async file decoding pass.
+        const entry2 = _stemMixerRegistry.get(node.id);
+        if (entry2) entry2.mode = null;
+        _registerStemMixer(node, ui);
     },
 });
+
+// ===========================================================================
+// Nodes 2.0 (Vue) compatibility — runtime detection + DOM fixes
+//
+// ComfyUI lets the user toggle between the LiteGraph (Nodes 1.0) and Vue
+// (Nodes 2.0) frontends without a page reload. Our DOM fixes must therefore
+// be applied/reverted on the fly when the user switches modes. We use a
+// MutationObserver to watch for that transition.
+// ===========================================================================
+
+// Registry of all live StemMixer UIs, keyed by node id. We also remember the
+// mode in which each one was last reconciled, so we only act on real changes.
+const _stemMixerRegistry = new Map();   // nodeId -> { node, ui, mode }
+
+// Detect whether ComfyUI is currently rendering with the Nodes 2.0 (Vue)
+// frontend. In LiteGraph 1.0, no element carries a node-id attribute; in
+// Nodes 2.0 every node wrapper does.
+function _isNodes2() {
+    return !!document.querySelector("[node-id]");
+}
+
+// Register a freshly-built StemMixer UI and reconcile it with the current mode.
+function _registerStemMixer(node, ui) {
+    _stemMixerRegistry.set(node.id, { node, ui, mode: null });
+    _ensureModeWatcher();
+    _reconcileNode(node.id);
+}
+
+// Walk every registered UI and apply/revert the Vue fixes as needed.
+function _reconcileAll() {
+    for (const id of _stemMixerRegistry.keys()) _reconcileNode(id);
+}
+
+// Reconcile one UI: bring its DOM in line with the current rendering mode.
+// Retries persistently if the Vue wrapper isn't mounted yet:
+//  - First 30 attempts via requestAnimationFrame (fast, ~500ms)
+//  - Then up to 20 more via setTimeout(100ms) (~2s total) for slow cases
+//    like brand-new nodes added on an empty graph in Nodes 2.0.
+function _reconcileNode(nodeId, attempt = 0) {
+    const entry = _stemMixerRegistry.get(nodeId);
+    if (!entry) return;
+    const { node, ui } = entry;
+
+    // Drop entries whose container is gone (node removed).
+    if (!ui.container?.isConnected) {
+        _stemMixerRegistry.delete(nodeId);
+        return;
+    }
+
+    const wantNodes2 = _isNodes2();
+
+    // Already reconciled to the current mode → nothing to do
+    if (entry.mode === (wantNodes2 ? "vue" : "lg")) return;
+
+    if (wantNodes2) {
+        const wrapper = document.querySelector(`[node-id="${node.id}"]`);
+        if (!wrapper) {
+            // Vue may not have mounted this node yet
+            if (attempt < 30) {
+                // First phase: fast retries via RAF (~500ms total)
+                requestAnimationFrame(() => _reconcileNode(nodeId, attempt + 1));
+            } else if (attempt < 50) {
+                // Second phase: slower retries via setTimeout (~2s more)
+                // Catches new-on-empty-graph nodes where Vue mounts late.
+                setTimeout(() => _reconcileNode(nodeId, attempt + 1), 100);
+            }
+            return;
+        }
+        _applyVueFix(wrapper, ui);
+        entry.mode = "vue";
+    } else {
+        _revertVueFix(ui);
+        entry.mode = "lg";
+    }
+
+    // Tell the LiteGraph node it needs a redraw so layout settles.
+    node.setDirtyCanvas?.(true, true);
+}
+
+// Apply the DOM tweaks needed for Nodes 2.0 (Vue) rendering.
+function _applyVueFix(wrapper, ui) {
+    const ta = wrapper.querySelector("textarea");
+    let gridParent = null;
+    if (ta) {
+        const widgetRow = ta.closest(".lg-node-widget");
+        if (widgetRow) {
+            widgetRow.dataset.smHidden = "1";
+            widgetRow.style.display = "none";
+        }
+        gridParent = widgetRow?.parentElement;     // .lg-node-widgets
+        if (gridParent) {
+            gridParent.dataset.smGrid = "1";
+            // !important is required: Vue rewrites style.gridTemplateRows
+            // to "auto auto" whenever its grid recomputes (e.g. when our
+            // _loadTrack modifies the inner DOM, or when a track is removed).
+            // Without !important, the inline value loses to Vue's update.
+            gridParent.style.setProperty("grid-template-rows", "1fr", "important");
+        }
+    }
+
+    // Make our root fill the slot the grid hands us, with internal scroll.
+    const root = ui.container;
+    if (root.parentElement) {
+        root.parentElement.dataset.smParent = "1";
+        root.parentElement.style.position = "relative";
+    }
+    root.dataset.smRoot = "1";
+    root.style.position  = "absolute";
+    root.style.inset     = "0";
+    root.style.height    = "100%";
+    root.style.maxHeight = "100%";
+
+    // Install a watchdog observer on the grid: Vue keeps trying to rewrite
+    // grid-template-rows after every internal recompute. We re-assert our
+    // value with !important whenever it tries.
+    if (gridParent && !ui._gridWatchdog) {
+        const target = gridParent;
+        const obs = new MutationObserver(() => {
+            // If Vue cleared or replaced our value, reapply
+            const current = target.style.gridTemplateRows;
+            if (current !== "1fr" || target.style.getPropertyPriority(
+                "grid-template-rows") !== "important") {
+                target.style.setProperty("grid-template-rows", "1fr", "important");
+            }
+        });
+        obs.observe(target, { attributes: true, attributeFilter: ["style"] });
+        ui._gridWatchdog = { obs, target };
+    }
+}
+
+// Revert the Vue tweaks so the UI behaves like vanilla LiteGraph again.
+// We only touch elements we previously tagged, to avoid over-reaching.
+function _revertVueFix(ui) {
+    // Disconnect the grid watchdog observer if any
+    if (ui._gridWatchdog) {
+        try { ui._gridWatchdog.obs.disconnect(); } catch (_) {}
+        try {
+            ui._gridWatchdog.target.style.removeProperty("grid-template-rows");
+        } catch (_) {}
+        ui._gridWatchdog = null;
+    }
+
+    // Restore the root container
+    const root = ui.container;
+    if (root?.dataset.smRoot === "1") {
+        root.style.position  = "";
+        root.style.inset     = "";
+        root.style.height    = "";
+        root.style.maxHeight = "";
+        delete root.dataset.smRoot;
+    }
+    if (root?.parentElement?.dataset.smParent === "1") {
+        root.parentElement.style.position = "";
+        delete root.parentElement.dataset.smParent;
+    }
+
+    // Restore any tagged grid parents and widget rows that may still be in
+    // the DOM. Note: in many cases LiteGraph will have already destroyed
+    // these elements, which is fine — we just clean up whatever's left.
+    document.querySelectorAll('[data-sm-grid="1"]').forEach(el => {
+        el.style.removeProperty("grid-template-rows");
+        delete el.dataset.smGrid;
+    });
+    document.querySelectorAll('[data-sm-hidden="1"]').forEach(el => {
+        el.style.display = "";
+        delete el.dataset.smHidden;
+    });
+}
+
+// Install (once) a MutationObserver on <body> that re-runs reconciliation
+// whenever ComfyUI's DOM structure changes — most importantly when the user
+// toggles between Nodes 1.0 and 2.0 in the settings.
+let _modeWatcherInstalled = false;
+function _ensureModeWatcher() {
+    if (_modeWatcherInstalled) return;
+    _modeWatcherInstalled = true;
+
+    let scheduled = false;
+    const trigger = () => {
+        if (scheduled) return;
+        scheduled = true;
+        // Coalesce bursts of mutations into a single reconciliation pass
+        requestAnimationFrame(() => {
+            scheduled = false;
+            _reconcileAll();
+        });
+    };
+
+    const obs = new MutationObserver(trigger);
+    obs.observe(document.body, { childList: true, subtree: true });
+}
