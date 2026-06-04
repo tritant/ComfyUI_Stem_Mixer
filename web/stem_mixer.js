@@ -26,6 +26,17 @@ function esc(str) {
 }
 
 // ---------------------------------------------------------------------------
+// Layout constants
+// ---------------------------------------------------------------------------
+const HEADER_H       =  52;   // transport row + margins
+const PADDING_H      =  16;   // bottom padding
+const STRIP_W        =  90;   // channel strip width per track (px)
+const STRIP_MASTER_W = 110;   // master strip width (px)
+const STRIP_H        = 260;   // fixed channel strip height (vertical body)
+const WF_MIN         =  32;   // waveform min height px
+const WF_MAX         = 64;   // waveform max height px (stretches up to this)
+const TRACK_FIXED_H = 116;   // legacy, retained for compatibility until full refactor
+// ---------------------------------------------------------------------------
 // CSS
 // ---------------------------------------------------------------------------
 const STYLES = `
@@ -36,7 +47,7 @@ const STYLES = `
     color: #ccc;
     box-sizing: border-box;
     width: 100%;
-    overflow: hidden;          /* scroll happens in .sm-tracks now */
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     transition: outline 0.1s ease;
@@ -46,115 +57,298 @@ const STYLES = `
     outline-offset: -4px;
     background: #1a6abf22;
 }
+
+/* Header (transport bar) */
 .sm-header {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-bottom: 8px;
-    flex-shrink: 0;            /* never compress the transport */
-}
-.sm-tracks {
-    flex: 1 1 auto;
-    overflow-y: auto;
-    overflow-x: hidden;
-    /* Reserve the scrollbar's gutter so track buttons stay clear */
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-    scrollbar-color: #555 transparent;
-    /* Generous right padding so the buttons (M / S / ✕ etc) breathe
-       comfortably away from the scrollbar */
-    padding-right: 12px;
-}
-.sm-tracks::-webkit-scrollbar {
-    width: 8px;
-}
-.sm-tracks::-webkit-scrollbar-track {
-    background: transparent;
-}
-.sm-tracks::-webkit-scrollbar-thumb {
-    background: #555;
-    border-radius: 4px;
-}
-.sm-tracks::-webkit-scrollbar-thumb:hover {
-    background: #777;
-}
-.sm-transport { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-.sm-time {
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-    color: #aaa;
-    min-width: 78px;
     flex-shrink: 0;
 }
-.sm-spacer { flex: 1; }
-
-/* Master cluster in the header */
-.sm-master {
+.sm-transport {
     display: flex;
     align-items: center;
     gap: 6px;
-    flex: 1;
-    min-width: 0;
-    padding: 0 6px;
-    background: #2a2a2a;
-    border: 1px solid #444;
-    border-radius: 5px;
-    height: 26px;
 }
-.sm-master-label {
+.sm-time {
+    font-size: 11px;
+    color: #888;
+    font-variant-numeric: tabular-nums;
+    margin-left: 6px;
+}
+
+/* New main body: horizontal split — waveforms (flex) + strips (fixed) */
+.sm-body {
+    flex: 1 1 auto;
+    display: flex;
+    gap: 6px;
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* Left column: waveforms stack, takes remaining width */
+.sm-wf-column {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: #555 transparent;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+	padding-right: 12px;
+}
+.sm-wf-column::-webkit-scrollbar {
+    width: 8px;
+}
+.sm-wf-column::-webkit-scrollbar-track {
+    background: transparent;
+}
+.sm-wf-column::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 4px;
+}
+.sm-wf-column::-webkit-scrollbar-thumb:hover {
+    background: #777;
+}
+
+/* A row in the waveform column corresponds to one track */
+.sm-wf-row {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 4px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+}
+.sm-wf-rowlbl {
     font-size: 10px;
     color: #888;
-    flex-shrink: 0;
+    padding: 2px 4px;
 }
-.sm-master-slider {
+
+/* Right column: channel strips, horizontal lineup, no scroll */
+.sm-strips {
+    flex-shrink: 0;
+    display: flex;
+    gap: 4px;
+    align-items: flex-start;
+    overflow-x: auto;
+    overflow-y: auto;
+    padding-bottom: 4px;
+}
+.sm-strips::-webkit-scrollbar {
+    height: 8px;
+}
+.sm-strips::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 4px;
+}
+
+/* Channel strip — fixed width and height, layout vertical */
+.sm-strip {
+    width: ${STRIP_W}px;
+    min-width: ${STRIP_W}px;
+    height: ${STRIP_H}px;
+    background: #1e1e1e;
+    border: 1px solid #2a2a2a;
+    border-radius: 4px;
+    padding: 6px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+/* Master strip — wider and accented orange */
+.sm-strip-master {
+    width: ${STRIP_MASTER_W}px;
+    min-width: ${STRIP_MASTER_W}px;
+    border: 1px solid #ff9f0a;
+    margin-left: 6px;
+	margin-right: 16px;
+}
+.sm-strip-master .sm-strip-title {
+    color: #ff9f0a;
+    letter-spacing: 1px;
+    font-weight: 500;
+    text-align: center;
+    width: 100%;
+    font-size: 10px;
+}
+
+/* Strip header — close button (track only) */
+.sm-strip-head {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+.sm-strip-name {
     flex: 1;
-    accent-color: #ff9f0a;
-    cursor: pointer;
+    background: #0e0e0e;
+    border: 1px solid #333;
+    border-radius: 2px;
+    color: #ccc;
+    font-size: 10px;
+    padding: 2px 4px;
+    text-align: center;
     min-width: 0;
 }
-.sm-master-val {
-    font-size: 10px;
-    color: #ccc;
-    min-width: 36px;
-    text-align: right;
+.sm-strip-close {
+    background: transparent;
+    border: none;
+    color: #666;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 2px;
+    line-height: 1;
+}
+.sm-strip-close:hover { color: #e25050; }
+
+/* Strip buttons — small action buttons in 2 rows */
+.sm-strip-btns {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+}
+.sm-strip-btns .sm-btn {
+    padding: 2px;
+    font-size: 9px;
+    line-height: 1.2;
+}
+
+/* Strip pan slider (horizontal) */
+.sm-strip-pan {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+}
+.sm-strip-pan-lbl {
+    font-size: 8px;
+    color: #666;
+}
+.sm-strip-pan input[type="range"] {
+    width: 100%;
+    accent-color: #4a9eff;
+    cursor: pointer;
+}
+.sm-strip-pan-val {
+    font-size: 9px;
+    color: #aaa;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Separator inside strip */
+.sm-strip-sep {
+    width: 100%;
+    height: 1px;
+    background: #333;
     flex-shrink: 0;
 }
-.sm-master-vu {
-    width: 14px;
-    height: 18px;
-    background: #1a1a1a;
-    border-radius: 2px;
+
+/* Fader + VU group at bottom of strip */
+.sm-strip-meter {
+    display: flex;
+    gap: 4px;
+    align-items: flex-start;
     flex-shrink: 0;
+}
+
+/* Vertical fader slider container */
+.sm-strip-fader {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+.sm-strip-fader input[type="range"] {
+    appearance: slider-vertical;
+    -webkit-appearance: slider-vertical;
+    writing-mode: vertical-lr;
+    direction: rtl;
+    width: 20px;
+    height: 90px;
+    accent-color: #4a9eff;
+    cursor: pointer;
+}
+.sm-strip-master .sm-strip-fader input[type="range"] {
+    accent-color: #ff9f0a;
+}
+.sm-strip-fader-val {
+    font-size: 9px;
+    color: #4a9eff;
+    margin-top: 4px;
+    font-variant-numeric: tabular-nums;
+}
+.sm-strip-master .sm-strip-fader-val {
+    color: #ff9f0a;
+}
+
+/* Track VU canvas (vertical) */
+.sm-strip-vu {
     display: block;
+    background: #0e0e0e;
+    border: 1px solid #333;
+    border-radius: 2px;
+    width: 22px;
+    height: 90px;
+    flex-shrink: 0;
 }
+
+/* Waveform-row canvas inherits adaptive height via CSS var */
+.sm-wf-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: #1a1a1a;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+.sm-waveform {
+    position: relative;
+    width: 100%;
+    height: var(--sm-wf-h, 64px);
+}
+
+/* Buttons (general) */
 .sm-btn {
-    background: #3a3a3a;
+    background: #1e1e1e;
     border: 1px solid #555;
-    border-radius: 4px;
+    border-radius: 2px;
     color: #ccc;
     cursor: pointer;
+    padding: 4px 8px;
     font-size: 11px;
-    padding: 3px 8px;
-    transition: background 0.15s;
-    white-space: nowrap;
-    flex-shrink: 0;
-    line-height: 1.4;
+    font-family: inherit;
 }
-.sm-btn:hover    { background: #4a4a4a; }
-.sm-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.sm-btn.active   { background: #1a6abf; border-color: #4a9eff; color: #fff; }
-/* EQ button glows orange when EQ is engaged but popup closed */
-.sm-btn.eq-engaged {
+.sm-btn:hover { background: #2a2a2a; }
+.sm-btn.active {
+    background: #1a6abf;
+    border-color: #4a9eff;
+    color: #fff;
+}
+.sm-btn.eq-engaged,
+.sm-btn.fx-engaged {
     background: #4a3000;
     border-color: #ff9f0a;
     color: #ff9f0a;
 }
+.sm-loop.active { background: #1a6abf; border-color: #4a9eff; color: #fff; }
 
 /* ----- EQ Popup ----- */
 .sm-eq-popup {
     position: fixed;
     width: 480px;
-    height: 320px;
+    height: 260px;
     background: #2a2a2a;
     border: 1px solid #555;
     border-radius: 6px;
@@ -178,16 +372,8 @@ const STYLES = `
     cursor: move;
     flex-shrink: 0;
 }
-.sm-eq-title {
-    font-size: 12px;
-    color: #ddd;
-    font-weight: 500;
-}
-.sm-eq-titleactions {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
+.sm-eq-title { font-size: 12px; color: #ddd; font-weight: 500; }
+.sm-eq-titleactions { display: flex; align-items: center; gap: 4px; }
 .sm-eq-reset {
     background: #3a3a3a;
     border: 1px solid #555;
@@ -196,13 +382,8 @@ const STYLES = `
     cursor: pointer;
     font-size: 10px;
     padding: 2px 8px;
-    transition: background 0.15s;
 }
-.sm-eq-reset:hover {
-    background: #4a4a4a;
-    border-color: #ff9f0a;
-    color: #ff9f0a;
-}
+.sm-eq-reset:hover { background: #4a4a4a; border-color: #ff9f0a; color: #ff9f0a; }
 .sm-eq-close {
     background: transparent;
     border: none;
@@ -212,36 +393,36 @@ const STYLES = `
     padding: 0 6px;
 }
 .sm-eq-close:hover { color: #fff; }
+
 .sm-eq-body {
-    display: flex;
     flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 180px;
+    gap: 10px;
     padding: 10px;
-    gap: 12px;
-    overflow: hidden;
+    min-height: 0;
 }
 .sm-eq-graph {
-    width: 230px;
+    width: 100%;
     height: 100%;
     background: #1a1a1a;
     border-radius: 4px;
-    flex-shrink: 0;
+    display: block;
 }
 .sm-eq-bands {
-    display: flex;
-    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 8px;
 }
 .sm-eq-band {
-    flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 4px;
     padding: 4px;
     background: #1e1e1e;
-    border: 1px solid #444;
-    border-radius: 4px;
-    min-width: 0;
+    border: 1px solid #333;
+    border-radius: 3px;
 }
 .sm-eq-bandlbl {
     font-size: 10px;
@@ -252,16 +433,15 @@ const STYLES = `
     font-size: 11px;
     color: #ddd;
     font-variant-numeric: tabular-nums;
-    min-height: 14px;
 }
 .sm-eq-slider {
     appearance: slider-vertical;
     -webkit-appearance: slider-vertical;
     writing-mode: vertical-lr;
     direction: rtl;
-    width: 24px;
-    flex: 1;
-    accent-color: #ff9f0a;
+    width: 22px;
+    height: 130px;
+    accent-color: #4a9eff;
     cursor: pointer;
 }
 .sm-eq-onoff {
@@ -272,91 +452,36 @@ const STYLES = `
     cursor: pointer;
     font-size: 10px;
     padding: 2px 8px;
-    width: 100%;
 }
-.sm-eq-onoff.on  { background: #1a6abf; border-color: #4a9eff; color: #fff; }
+.sm-eq-onoff.on { background: #1a6abf; border-color: #4a9eff; color: #fff; }
 .sm-eq-onoff.off { opacity: 0.6; }
 .sm-eq-freqlbl {
-    font-size: 10px;
-    color: #777;
-    margin-top: 2px;
+    font-size: 9px;
+    color: #666;
 }
-.sm-track {
-    background: #2a2a2a;
-    border: 1px solid #444;
-    border-radius: 6px;
-    margin-bottom: 8px;
-    padding: 6px 8px;
-    box-sizing: border-box;
-}
-.sm-track-header {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    margin-bottom: 5px;
-}
-.sm-track-name {
-    background: #1e1e1e;
-    border: 1px solid #555;
-    border-radius: 3px;
-    color: #ddd;
-    flex: 1;
-    font-size: 11px;
-    padding: 2px 6px;
-    min-width: 0;
-}
-.sm-gain-row, .sm-pan-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 5px;
-}
-.sm-gain-label, .sm-pan-label { font-size: 10px; color: #888; width: 28px; flex-shrink: 0; }
-.sm-gain-slider, .sm-pan-slider { flex: 1; accent-color: #4a9eff; cursor: pointer; min-width: 0; }
-.sm-gain-val, .sm-pan-val { font-size: 10px; color: #aaa; min-width: 34px; text-align: right; flex-shrink: 0; }
 
-.sm-wf-row {
-    display: flex;
-    gap: 4px;
+/* Le master meter remplit toute la hauteur disponible */
+.sm-strip-master .sm-strip-meter {
+    flex: 1;
+    height: 100%;
     align-items: stretch;
 }
-.sm-waveform {
-    border-radius: 4px;
-    overflow: hidden;
-    background: #1a1a1a;
-    position: relative;
+.sm-strip-master .sm-strip-fader {
     flex: 1;
-    height: var(--sm-wf-h, 64px);
-    box-sizing: border-box;
-    cursor: pointer;
-    transition: height 0.15s ease;
+    justify-content: stretch;
 }
-.sm-waveform-placeholder {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: var(--sm-wf-h, 64px);
-    color: #555;
-    font-size: 11px;
+.sm-strip-master .sm-strip-fader input[type="range"] {
+    height: auto;
+    flex: 1;
+    min-height: 100px;
 }
-.sm-vu {
-    width: 14px;
-    height: var(--sm-wf-h, 64px);
-    background: #1a1a1a;
-    border-radius: 3px;
-    flex-shrink: 0;
-    display: block;
+.sm-strip-master .sm-strip-vu {
+    height: auto;
+    flex: 1;
+    min-height: 100px;
 }
 `;
 
-// ---------------------------------------------------------------------------
-// Layout constants
-// ---------------------------------------------------------------------------
-const HEADER_H      =  52;   // transport row + margins
-const PADDING_H     =  16;   // bottom padding
-const TRACK_FIXED_H = 116;   // per track fixed part: header(40) + gain(25) + pan(25) + gaps(26)
-const WF_MIN        =  32;   // waveform min height px
-const WF_MAX        =  64;   // waveform max height px
 
 // ---------------------------------------------------------------------------
 // StemMixerUI
@@ -432,8 +557,12 @@ class StemMixerUI {
         this.masterGain.connect(this.ctx.destination);
     }
 
-    // -----------------------------------------------------------------------
-    // Shell
+// -----------------------------------------------------------------------
+    // Shell — new horizontal layout
+    //   header (transport)
+    //   body:
+    //     left column : waveforms stack (flex, scrollable, stretches vertically)
+    //     right block : channel strips (fixed-size) + master strip
     // -----------------------------------------------------------------------
     _buildShell() {
         const el = document.createElement("div");
@@ -441,23 +570,34 @@ class StemMixerUI {
         el.innerHTML = `
             <div class="sm-header">
                 <div class="sm-transport">
-                    <button class="sm-btn sm-play" title="Play / Pause">▶</button>
-                    <button class="sm-btn sm-stop" title="Stop">■</button>
+                    <button class="sm-btn sm-play"   title="Play / Pause">▶</button>
+                    <button class="sm-btn sm-stop"   title="Stop">■</button>
                     <button class="sm-btn sm-rewind" title="Return to start">⏮</button>
-                    <button class="sm-btn sm-loop" title="Loop (selection if any, otherwise full)">⟲</button>
+                    <button class="sm-btn sm-loop"   title="Loop (selection if any, otherwise full)">⟲</button>
                     <span class="sm-time">0:00 / 0:00</span>
                 </div>
-                <div class="sm-master">
-                    <span class="sm-master-label">Master</span>
-                    <input class="sm-master-slider" type="range"
-                           min="0" max="1.5" step="0.01" value="1" />
-                    <span class="sm-master-val">100%</span>
-                    <canvas class="sm-master-vu"></canvas>
-                </div>
-                <button class="sm-btn sm-add">+ Add stem</button>
+                <button class="sm-btn sm-add" style="margin-left:auto;">+ Add stem</button>
             </div>
-            <div class="sm-tracks"></div>
+            <div class="sm-body">
+                <div class="sm-wf-column"></div>
+                <div class="sm-strips">
+                    <div class="sm-strip sm-strip-master">
+                        <div class="sm-strip-title">MASTER</div>
+                        <div class="sm-strip-sep"></div>
+                        <div class="sm-strip-meter">
+                            <div class="sm-strip-fader">
+                                <input class="sm-master-slider" type="range"
+                                       min="0" max="1.5" step="0.01" value="1" />
+                                <div class="sm-strip-fader-val sm-master-val">100%</div>
+                            </div>
+                            <canvas class="sm-master-vu sm-strip-vu" width="22" height="90"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
         `;
+
+        // Transport hooks
         el.querySelector(".sm-play").addEventListener("click",   () => this._togglePlay());
         el.querySelector(".sm-stop").addEventListener("click",   () => this._stop());
         el.querySelector(".sm-rewind").addEventListener("click", () => this._rewind());
@@ -473,7 +613,6 @@ class StemMixerUI {
             this._applyMasterVolume();
             this._saveState();
         });
-        // Double-click master slider to reset to 100%
         mSlider.addEventListener("dblclick", () => {
             this.masterVolume = 1;
             mSlider.value = 1;
@@ -482,19 +621,17 @@ class StemMixerUI {
             this._saveState();
         });
 
-        // Stash master VU canvas + slider/label refs
         this._masterVuCanvas = el.querySelector(".sm-master-vu");
         this._masterSlider   = mSlider;
         this._masterLabel    = mLabel;
 
-        // Drag & drop on the whole root — drop a file anywhere to add a stem
+        // Drag & drop on the whole root
         el.addEventListener("dragover", e => {
             if (!e.dataTransfer?.types?.includes("Files")) return;
             e.preventDefault();
             el.classList.add("sm-drag-active");
         });
         el.addEventListener("dragleave", e => {
-            // Only react when the cursor truly leaves the root
             if (e.target === el) el.classList.remove("sm-drag-active");
         });
         el.addEventListener("drop", async e => {
@@ -507,9 +644,7 @@ class StemMixerUI {
             }
         });
 
-        // Observe the container itself
         this._ro.observe(el);
-
         return el;
     }
 
@@ -531,19 +666,53 @@ class StemMixerUI {
         }
     }
 
-    _tracksEl() { return this.container.querySelector(".sm-tracks"); }
+    // Convenience getters for the two columns
+    _wfColumn() { return this.container.querySelector(".sm-wf-column"); }
+    _stripsEl() { return this.container.querySelector(".sm-strips"); }
+
+    // -----------------------------------------------------------------------
+    // _tracksEl() compatibility shim
+    //
+    // Older code paths call _tracksEl() expecting a single container that
+    // holds per-track rows. With the new split layout (waveforms left,
+    // channel strips right) there is no single container, but legacy callers
+    // mostly use it to query [data-id=...] elements. The returned proxy
+    // forwards `querySelector` / `querySelectorAll` to the full container,
+    // so the old selectors keep working.
+    // -----------------------------------------------------------------------
+    _tracksEl() {
+        const root = this.container;
+        return {
+            querySelector:    (sel) => root.querySelector(sel),
+            querySelectorAll: (sel) => root.querySelectorAll(sel),
+            // For code that appends to it — fall back to the waveform column
+            appendChild:      (n)   => this._wfColumn().appendChild(n),
+        };
+    }
+	
     _playBtn()  { return this.container.querySelector(".sm-play"); }
     _timeEl()   { return this.container.querySelector(".sm-time"); }
 
     // -----------------------------------------------------------------------
     // Adaptive waveform height — clamp between WF_MIN and WF_MAX
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Adaptive waveform height — stretches with the node height.
+    //
+    // In the new layout, waveforms are stacked vertically in the left column
+    // and use whatever vertical space is available, divided by the number
+    // of tracks. The channel strips on the right have a FIXED height
+    // (STRIP_H) and don't stretch, so the empty space below them appears
+    // when the node is enlarged — that's the desired behavior.
+    // -----------------------------------------------------------------------
     _calcWfHeight() {
         if (this.tracks.length === 0) return WF_MAX;
-        const nodeH     = this.node.size[1] - 40;  // subtract LiteGraph title bar
-        const available = nodeH - HEADER_H - PADDING_H
-                          - this.tracks.length * TRACK_FIXED_H;
-        const perTrack  = Math.floor(available / this.tracks.length);
+        const nodeH = this.node.size[1] - 40;  // subtract LiteGraph title bar
+        // Available vertical space for the body (waveforms area)
+        const body = nodeH - HEADER_H - PADDING_H;
+        // Each row has the canvas plus a label (~18px) and padding (~10px)
+        const rowChrome = 28;
+        const perTrack  = Math.floor(body / this.tracks.length) - rowChrome;
         return Math.min(WF_MAX, Math.max(WF_MIN, perTrack));
     }
 
@@ -619,141 +788,192 @@ class StemMixerUI {
         };
 
         const row = this._buildRow(track);
-        this._tracksEl().appendChild(row);
+        //this._tracksEl().appendChild(row);
         this.tracks.push(track);
         this._autoResizeNode(isRestore);
 
         if (track.filename) await this._loadTrack(track, row);
     }
 
+    // -----------------------------------------------------------------------
+    // Build a track row.
+    //
+    // In the new layout this builds TWO sibling DOM nodes:
+    //   - a waveform row appended to the .sm-wf-column (left)
+    //   - a channel strip appended to .sm-strips before the master (right)
+    //
+    // They share the same data-id so existing code that queries
+    // [data-id="..."] still finds something. We return the channel strip
+    // as the "row" since most legacy code expects to manipulate buttons,
+    // sliders, and per-track widgets there. The waveform row is reachable
+    // via track.wfRow (set in this function).
+    // -----------------------------------------------------------------------
     _buildRow(track) {
-        const row = document.createElement("div");
-        row.className = "sm-track";
-        row.dataset.id = track.id;
-        row.innerHTML = `
-            <div class="sm-track-header">
-                <input class="sm-track-name" type="text" value="${esc(track.name)}" />
-                <button class="sm-btn sm-load-btn">📂 Load</button>
-                <button class="sm-btn sm-eq-btn" title="EQ">EQ</button>
-                <button class="sm-btn sm-fx-btn" title="Effects">FX</button>
-                <button class="sm-btn sm-mute-btn ${track.mute ? 'active' : ''}">M</button>
-                <button class="sm-btn sm-solo-btn ${track.solo ? 'active' : ''}">S</button>
-                <button class="sm-btn sm-remove-btn">✕</button>
+        // ---- 1) Waveform row (left column) ----
+        const wfRow = document.createElement("div");
+        wfRow.className = "sm-wf-row";
+        wfRow.dataset.id = track.id;
+wfRow.innerHTML = `
+    <div class="sm-wf-rowlbl">${esc(track.name)}</div>
+    <div class="sm-waveform">
+        <canvas class="sm-wf-canvas sm-wave"></canvas>
+    </div>
+`;
+        this._wfColumn().appendChild(wfRow);
+        track.wfRow = wfRow;
+
+        // ---- 2) Channel strip (right block, inserted before master) ----
+        const strip = document.createElement("div");
+        strip.className = "sm-strip";
+        strip.dataset.id = track.id;
+        strip.innerHTML = `
+            <div class="sm-strip-head">
+                <input class="sm-strip-name sm-track-name" type="text" value="${esc(track.name)}" />
+                <button class="sm-strip-close sm-remove-btn" title="Remove track">✕</button>
             </div>
-            <div class="sm-gain-row">
-                <span class="sm-gain-label">Gain</span>
-                <input class="sm-gain-slider" type="range" min="0" max="2" step="0.01"
-                       value="${track.gain}" />
-                <span class="sm-gain-val">${Math.round(track.gain * 100)}%</span>
+            <div class="sm-strip-btns">
+                <button class="sm-btn sm-load-btn"  title="Load file">📁</button>
+                <button class="sm-btn sm-eq-btn"    title="EQ">EQ</button>
+                <button class="sm-btn sm-fx-btn"    title="Effects">FX</button>
+                <button class="sm-btn sm-mute-btn ${track.mute ? 'active' : ''}" title="Mute">M</button>
+                <button class="sm-btn sm-solo-btn ${track.solo ? 'active' : ''}" title="Solo" style="grid-column: span 2;">S</button>
             </div>
-            <div class="sm-pan-row">
-                <span class="sm-pan-label">Pan</span>
-                <input class="sm-pan-slider" type="range" min="-1" max="1" step="0.01"
-                       value="${track.pan}" />
-                <span class="sm-pan-val">${this._formatPan(track.pan)}</span>
+            <div class="sm-strip-pan">
+                <div class="sm-strip-pan-lbl">PAN</div>
+                <input class="sm-pan-slider" type="range"
+                       min="-1" max="1" step="0.01" value="${track.pan}" />
+                <div class="sm-strip-pan-val sm-pan-val">C</div>
             </div>
-            <div class="sm-wf-row">
-                <div class="sm-waveform">
-                    <div class="sm-waveform-placeholder">No file — click 📂 Load</div>
+            <div class="sm-strip-sep"></div>
+            <div class="sm-strip-meter">
+                <div class="sm-strip-fader">
+                    <input class="sm-gain-slider" type="range"
+                           min="0" max="2" step="0.01" value="${track.gain}" />
+                    <div class="sm-strip-fader-val sm-gain-val">${Math.round(track.gain * 100)}%</div>
                 </div>
-                <canvas class="sm-vu"></canvas>
+                <canvas class="sm-vu sm-strip-vu" width="22" height="90"></canvas>
             </div>
         `;
 
-        row.querySelector(".sm-track-name").addEventListener("change", e => {
-            track.name = e.target.value; this._saveState();
-            // Update EQ popup title if open
-            if (track.eqPopup) {
-                const t = track.eqPopup.querySelector(".sm-eq-title");
-                if (t) t.textContent = `EQ — ${track.name}`;
-            }
-        });
-        row.querySelector(".sm-load-btn").addEventListener("click", () => this._pickFile(track, row));
-        const eqBtn = row.querySelector(".sm-eq-btn");
-        eqBtn.addEventListener("click", () => this._toggleEQPopup(track, row));
-        this._refreshEQButton(track, eqBtn);
+        // Insert strip BEFORE the master strip
+        const stripsEl = this._stripsEl();
+        const masterStrip = stripsEl.querySelector(".sm-strip-master");
+        stripsEl.insertBefore(strip, masterStrip);
 
-        const fxBtn = row.querySelector(".sm-fx-btn");
-        fxBtn.addEventListener("click", () => {
-            if (!track.fxChain) {
-                alert("Load a file first to enable effects.");
-                return;
-            }
-            showFXMenu(track, fxBtn, this);
-        });
-        this._refreshFXButton(track, fxBtn);
-        row.querySelector(".sm-mute-btn").addEventListener("click", e => {
-            track.mute = !track.mute;
-            e.target.classList.toggle("active", track.mute);
-            this._applyGain(track); this._saveState();
-        });
-        row.querySelector(".sm-solo-btn").addEventListener("click", e => {
-            const newSolo = !track.solo;
-            for (const t of this.tracks) {
-                if (t.id !== track.id && t.solo) {
-                    t.solo = false;
-                    const btn = this._tracksEl()
-                        .querySelector(`[data-id="${t.id}"] .sm-solo-btn`);
-                    if (btn) btn.classList.remove("active");
-                }
-            }
-            track.solo = newSolo;
-            e.target.classList.toggle("active", track.solo);
-            this._applyAllGains(); this._saveState();
-        });
-        row.querySelector(".sm-remove-btn").addEventListener("click", () => {
-            // Close EQ popup if open (with proper listener cleanup)
-            if (track.eqPopup) {
-                try { track.eqPopup._cleanup?.(); } catch (_) {}
-                track.eqPopup.remove();
-                track.eqPopup = null;
-            }
-            this._disposeTrackAudio(track);
-            row.remove();
-            this.tracks = this.tracks.filter(t => t.id !== track.id);
-            this._autoResizeNode();
+        // Save handy references on the track
+track.wfEl     = wfRow.querySelector(".sm-waveform");
+track.canvas   = wfRow.querySelector(".sm-wave");
+        track.vuCanvas = strip.querySelector(".sm-vu");
+
+        // -----------------------------------------------------------------
+        // Event wiring (mirrors the previous _buildRow behavior)
+        // -----------------------------------------------------------------
+
+        // Track name (kept in sync between strip input and wf-row label)
+        const nameInput = strip.querySelector(".sm-track-name");
+        const wfLbl     = wfRow.querySelector(".sm-wf-rowlbl");
+        nameInput.addEventListener("input", () => {
+            track.name = nameInput.value;
+            wfLbl.textContent = track.name;
             this._saveState();
-            this._applyAllGains();
         });
 
-        // Gain slider
-        const gainSlider = row.querySelector(".sm-gain-slider");
-        const gainLabel  = row.querySelector(".sm-gain-val");
+        // Load button — file picker
+        strip.querySelector(".sm-load-btn").addEventListener("click", () => {
+            const inp = document.createElement("input");
+            inp.type = "file";
+            inp.accept = ".wav,.flac,.mp3,.ogg,.m4a,.aiff,.aif";
+            inp.onchange = async () => {
+                if (inp.files?.[0]) await this._uploadAndLoad(inp.files[0], track, strip);
+            };
+            inp.click();
+        });
+
+        // EQ
+strip.querySelector(".sm-eq-btn").addEventListener("click", () => this._toggleEQPopup(track, strip));
+const eqBtn = strip.querySelector(".sm-eq-btn");
+this._refreshEQButton(track, eqBtn);
+
+        // FX
+        strip.querySelector(".sm-fx-btn").addEventListener("click", (e) => {
+            showFXMenu(track, e.currentTarget, this);
+        });
+
+        // Mute / Solo
+strip.querySelector(".sm-mute-btn").addEventListener("click", e => {
+    track.mute = !track.mute;
+    e.target.classList.toggle("active", track.mute);
+    this._applyGain(track);
+    this._saveState();
+});
+strip.querySelector(".sm-solo-btn").addEventListener("click", e => {
+    const newSolo = !track.solo;
+    for (const t of this.tracks) {
+        if (t.id !== track.id && t.solo) {
+            t.solo = false;
+            const btn = this.container.querySelector(`.sm-strip[data-id="${t.id}"] .sm-solo-btn`);
+            if (btn) btn.classList.remove("active");
+        }
+    }
+    track.solo = newSolo;
+    e.target.classList.toggle("active", track.solo);
+    this._applyAllGains();
+    this._saveState();
+});
+
+        // Remove
+        strip.querySelector(".sm-remove-btn").addEventListener("click", () => this._removeTrack(track));
+
+        // Gain slider (vertical)
+        const gainSlider = strip.querySelector(".sm-gain-slider");
+        const gainLabel  = strip.querySelector(".sm-gain-val");
         gainSlider.addEventListener("input", e => {
             track.gain = parseFloat(e.target.value);
             gainLabel.textContent = `${Math.round(track.gain * 100)}%`;
-            this._applyGain(track); this._saveState();
+            if (track.gainNode) track.gainNode.gain.value = track.gain;
+            this._saveState();
+        });
+        gainSlider.addEventListener("dblclick", () => {
+            track.gain = 1.0;
+            gainSlider.value = 1.0;
+            gainLabel.textContent = "100%";
+            if (track.gainNode) track.gainNode.gain.value = 1.0;
+            this._saveState();
         });
 
         // Pan slider
-        const panSlider = row.querySelector(".sm-pan-slider");
-        const panLabel  = row.querySelector(".sm-pan-val");
+        const panSlider = strip.querySelector(".sm-pan-slider");
+        const panLabel  = strip.querySelector(".sm-pan-val");
+        const fmtPan = v => {
+            const n = Math.round(v * 100);
+            if (n === 0) return "C";
+            return (n < 0 ? "L" : "R") + Math.abs(n);
+        };
+        panLabel.textContent = fmtPan(track.pan);
         panSlider.addEventListener("input", e => {
             track.pan = parseFloat(e.target.value);
-            panLabel.textContent = this._formatPan(track.pan);
-            this._applyPan(track); this._saveState();
+            panLabel.textContent = fmtPan(track.pan);
+            if (track.pannerNode) track.pannerNode.pan.value = track.pan;
+            this._saveState();
         });
-        // Double-click pan slider to reset to center
         panSlider.addEventListener("dblclick", () => {
             track.pan = 0;
             panSlider.value = 0;
-            panLabel.textContent = this._formatPan(0);
-            this._applyPan(track); this._saveState();
+            panLabel.textContent = "C";
+            if (track.pannerNode) track.pannerNode.pan.value = 0;
+            this._saveState();
         });
 
-        // Waveform mouse interactions: click=seek, drag=selection,
-        // dblclick=clear, drag near edges=resize, drag inside=move
-        const wfEl = row.querySelector(".sm-waveform");
-        wfEl.addEventListener("mousedown",   e => this._onWaveMouseDown(e, track, wfEl));
-        wfEl.addEventListener("mousemove",   e => this._onWaveMouseMove(e, track, wfEl));
-        wfEl.addEventListener("mouseleave",  () => { wfEl.style.cursor = ""; });
-        wfEl.addEventListener("dblclick",    () => this._clearSelection());
+        // Waveform mouse events for selection/seek (on the wf-row canvas)
+const wfEl = track.wfEl;
+wfEl.addEventListener("mousedown",  e => this._onWaveMouseDown(e, track, wfEl));
+wfEl.addEventListener("mousemove",  e => this._onWaveMouseMove(e, track, wfEl));
+wfEl.addEventListener("mouseleave", () => { wfEl.style.cursor = ""; });
+wfEl.addEventListener("dblclick",   () => this._clearSelection());
 
-        // Stash VU canvas reference
-        track.vuCanvas = row.querySelector(".sm-vu");
-
-        return row;
+        return strip;
     }
+
 
     _formatPan(p) {
         if (Math.abs(p) < 0.01) return "C";
@@ -998,7 +1218,7 @@ class StemMixerUI {
             btn.textContent = txt;
             btn.disabled    = busy;
         };
-        setBtn("⏳ Upload…", true);
+        setBtn("⏳", true);
         try {
             const fd = new FormData();
             fd.append("file", file);
@@ -1011,13 +1231,13 @@ class StemMixerUI {
             if (nameEl) nameEl.value = track.name;
             this._saveState();
 
-            setBtn("⏳ Decode…", true);
+            setBtn("⏳", true);
             await this._loadTrack(track, row);
         } catch (err) {
             console.error("[StemMixer] Upload error:", err);
             alert(`StemMixer upload error: ${err.message}`);
         } finally {
-            setBtn("📂 Load", false);
+            setBtn("📂", false);
         }
     }
 
@@ -1058,6 +1278,28 @@ class StemMixerUI {
         track.vuPeakL = 0;
         track.vuPeakR = 0;
     }
+
+_removeTrack(track) {
+    // Close EQ popup if open
+    if (track.eqPopup) {
+        try { track.eqPopup._cleanup?.(); } catch (_) {}
+        track.eqPopup.remove();
+        track.eqPopup = null;
+    }
+    // Dispose all audio resources
+    this._disposeTrackAudio(track);
+    // Remove DOM elements (waveform row + channel strip)
+const wfRow = this.container.querySelector(`.sm-wf-row[data-id="${track.id}"]`);
+if (wfRow) wfRow.remove();
+    const strip = this.container.querySelector(`.sm-strip[data-id="${track.id}"]`);
+    if (strip) strip.remove();
+    // Remove from the array
+    const idx = this.tracks.indexOf(track);
+    if (idx >= 0) this.tracks.splice(idx, 1);
+    // Resize the node
+    this._autoResizeNode();
+    this._saveState();
+}
 
     // -----------------------------------------------------------------------
     // Load — fetch + decodeAudioData + build persistent audio graph
@@ -1152,9 +1394,11 @@ class StemMixerUI {
         track.peaks = peaks;
 
         // 5. Canvas waveform — wait one frame so wfEl has layout dimensions
-        const wfEl = row.querySelector(".sm-waveform");
-        wfEl.innerHTML = "";
-        track.wfEl = wfEl;
+const wfEl = track.wfEl || this.container.querySelector(`.sm-wf-row[data-id="${track.id}"] .sm-waveform`);
+if (wfEl) {
+    wfEl.innerHTML = "";
+    track.wfEl = wfEl;
+}
 
         const wfH    = this._calcWfHeight();
         const canvas = document.createElement("canvas");
@@ -1545,27 +1789,27 @@ class StemMixerUI {
     }
 
     // Update the EQ button color in the track header
-    _refreshEQButton(track, btn = null) {
-        if (!btn) {
-            const row = this._tracksEl().querySelector(`[data-id="${track.id}"]`);
-            btn = row?.querySelector(".sm-eq-btn");
-        }
-        if (!btn) return;
-        const open   = !!track.eqPopup;
-        const active = this._isEQActive(track);
-        btn.classList.toggle("active",      open);
-        btn.classList.toggle("eq-engaged", !open && active);
+_refreshEQButton(track, btn = null) {
+    if (!btn) {
+        const strip = this.container.querySelector(`.sm-strip[data-id="${track.id}"]`);
+        btn = strip?.querySelector(".sm-eq-btn");
     }
+    if (!btn) return;
+    const open   = !!track.eqPopup;
+    const active = this._isEQActive(track);
+    btn.classList.toggle("active",      open);
+    btn.classList.toggle("eq-engaged", !open && active);
+}
 
-    _refreshFXButton(track, btn = null) {
-        if (!btn) {
-            const row = this._tracksEl().querySelector(`[data-id="${track.id}"]`);
-            btn = row?.querySelector(".sm-fx-btn");
-        }
-        if (!btn) return;
-        const active = !!(track.fxChain && track.fxChain.isActive());
-        btn.classList.toggle("fx-engaged", active);
+_refreshFXButton(track, btn = null) {
+    if (!btn) {
+        const strip = this.container.querySelector(`.sm-strip[data-id="${track.id}"]`);
+        btn = strip?.querySelector(".sm-fx-btn");
     }
+    if (!btn) return;
+    const active = !!(track.fxChain && track.fxChain.isActive());
+    btn.classList.toggle("fx-engaged", active);
+}
 
     // -----------------------------------------------------------------------
     // EQ popup — floating, draggable, one per track
@@ -1632,9 +1876,9 @@ class StemMixerUI {
             x = Math.max(0, Math.min(track.eqWindow.x, window.innerWidth  - 100));
             y = Math.max(0, Math.min(track.eqWindow.y, window.innerHeight - 50));
         } else {
-            const r = row.getBoundingClientRect();
-            x = Math.min(r.right + 10, window.innerWidth - 500);
-            y = Math.max(20,           r.top);
+const r = row.getBoundingClientRect();
+x = Math.max(20, r.left - 500);
+y = Math.max(20, r.top);
         }
         popup.style.left = `${x}px`;
         popup.style.top  = `${y}px`;
@@ -1918,48 +2162,40 @@ class StemMixerUI {
     //
     // preserveCurrentHeight=true → never shrink below current size (used
     //   during workflow restore to keep the user's manual height).
-    _autoResizeNode(preserveCurrentHeight = false) {
-        const fallbackH = TRACK_FIXED_H + this._calcWfHeight();
-        let trackH = fallbackH;
-
-        // Try to use the real measured height of an existing track row.
-        // Falls back to the constant if layout isn't ready yet (height = 0).
-        const sample = this._tracksEl().querySelector(".sm-track");
-        if (sample) {
-            const rect = sample.getBoundingClientRect();
-            if (rect.height > 0) {
-                const cs = getComputedStyle(sample);
-                const marginBottom = parseFloat(cs.marginBottom) || 0;
-                trackH = rect.height + marginBottom;
-            }
-        }
-
-        // Header is fixed; pad a small safety margin (6px) so subpixel
-        // rounding and the scrollbar gutter never cause an unwanted scroll.
-        const minH = HEADER_H + this.tracks.length * trackH + PADDING_H + 6;
-
-        const currentH = this.node.size?.[1] || 0;
-        const finalH = preserveCurrentHeight
-            ? Math.max(minH, currentH, 80)
-            : Math.max(minH, 80);
-        this.node.size = [this.node.size[0], finalH];
-        this.node.setDirtyCanvas(true, true);
-        this._lastWfH = null;
-        this._applyWfHeight();
-        if (!this.isPlaying) {
-            this._timeEl().textContent = this._formatTimeWithTotal(this.offsetSec);
-        }
-
-        // Opportunistic Vue reconciliation: if we're in Nodes 2.0 and the
-        // DOM fixes haven't been applied yet (e.g. for a freshly-created
-        // node where the initial reconciliation race lost), apply them now.
-        // This is cheap when fixes are already in place (no-op).
-        const entry = _stemMixerRegistry.get(this.node.id);
-        if (entry && entry.mode !== "vue" && _isNodes2()) {
-            entry.mode = null;   // force re-evaluation
-            _reconcileNode(this.node.id);
-        }
+_autoResizeNode(preserveCurrentHeight = false) {
+    // Hauteur d'une row de waveform (label + canvas + padding)
+    const WF_ROW_CHROME = 28;
+    const wfH = this._calcWfHeight();
+    const wfRowH = wfH + WF_ROW_CHROME;
+    
+    // Hauteur cible : la colonne waveforms doit afficher toutes les tracks
+    // OU le master doit être entièrement visible — on prend le plus grand
+    const wfColumnH = this.tracks.length * wfRowH + 4 * Math.max(0, this.tracks.length - 1);
+    const stripsH = STRIP_H;
+    const bodyH = Math.max(wfColumnH, stripsH);
+    
+    const minH = HEADER_H + bodyH + PADDING_H + 20;
+    
+    const currentH = this.node.size?.[1] || 0;
+    const finalH = preserveCurrentHeight
+        ? Math.max(minH, currentH, 370)
+        : Math.max(minH, 370);
+    
+    this.node.size = [this.node.size[0], finalH];
+    this.node.setDirtyCanvas(true, true);
+    this._lastWfH = null;
+    this._applyWfHeight();
+    if (!this.isPlaying) {
+        this._timeEl().textContent = this._formatTimeWithTotal(this.offsetSec);
     }
+    
+    // Opportunistic Vue reconciliation
+    const entry = _stemMixerRegistry.get(this.node.id);
+    if (entry && entry.mode !== "vue" && _isNodes2()) {
+        entry.mode = null;
+        _reconcileNode(this.node.id);
+    }
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -2054,7 +2290,7 @@ app.registerExtension({
                 },
             });
 
-            this.size = [520, 80];
+            this.size = [520, 370];
             this.setDirtyCanvas(true, true);
 
             // Register the UI with the global mode watcher. This installs
